@@ -5,20 +5,27 @@ Idempotent: run it after every upstream sync. It
   1. copies scripts/nas/NAS_NOTES.md into each skill directory,
   2. inserts (or refreshes) a short override banner right after each SKILL.md frontmatter,
   3. rewrites the local note paths (~/Documents/notes/, ~/Context/) in the skill's
-     Markdown instructions to notes/{YYYY-MM}/ (Tools/ helpers are left alone).
+     Markdown instructions to notes/{YYYY-MM}/ (Tools/ helpers are left alone),
+  4. packs every patched skill as dist/<skill>.zip, ready to drag into claude.ai
+     (Settings -> Capabilities -> Skills -> Upload). dist/ is git-ignored.
 
-Usage:  python3 scripts/nas/patch.py [--check]
+Usage:  python3 scripts/nas/patch.py [--check] [--no-zip]
 --check makes no changes and exits 1 if anything still needs patching.
+--no-zip skips step 4.
 """
 from __future__ import annotations
 
 import re
+import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
 CONTRACT = Path(__file__).with_name("NAS_NOTES.md")
+DIST = ROOT / "dist"
+ZIP_EXCLUDE = {".DS_Store", "node_modules", "__pycache__", ".git"}
 # Author-only maintenance tools: they produce no notes, so they are left untouched.
 SKIP = {"ljg-push", "fix-ljg-org-to-md"}
 # Our own skills already follow the contract natively: copy NAS_NOTES.md, no banner/rewrite.
@@ -50,6 +57,22 @@ def instruction_files(skill: Path):
         if rel.parts[0] == "Tools" or p.name == "NAS_NOTES.md":
             continue
         yield p
+
+
+def build_zips(skills: list[Path]) -> list[Path]:
+    """One zip per skill, with the skill folder at the zip root (what claude.ai expects)."""
+    shutil.rmtree(DIST, ignore_errors=True)
+    DIST.mkdir()
+    out = []
+    for skill in skills:
+        dest = DIST / f"{skill.name}.zip"
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in sorted(skill.rglob("*")):
+                rel = f.relative_to(skill)
+                if f.is_file() and not ZIP_EXCLUDE.intersection(rel.parts):
+                    z.write(f, f"{skill.name}/{rel.as_posix()}")
+        out.append(dest)
+    return out
 
 
 def main() -> int:
@@ -90,6 +113,11 @@ def main() -> int:
     if leftovers:
         print("local paths still present in:", *leftovers, sep="\n  ")
         return 1
+    if "--no-zip" not in sys.argv[1:]:
+        skills = sorted(d for d in SKILLS.iterdir()
+                        if d.is_dir() and d.name.startswith("ljg-") and d.name not in SKIP)
+        zips = build_zips(skills)
+        print(f"zipped {len(zips)} skill(s) into {DIST.relative_to(ROOT)}/ - drag them into claude.ai")
     return 0
 
 
